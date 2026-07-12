@@ -496,8 +496,9 @@ async def dial_out(request: Request):
     plivo_auth_id = body["plivo_auth_id"]
     plivo_auth_token = body["plivo_auth_token"]
 
+    base_url = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
     answer_url = (
-        f"https://your-service.example.com/plivo-answer"
+        f"{base_url}/plivo-answer"
         f"?lead_id={body.get('lead_id','')}"
         f"&name={body.get('name','')}"
         f"&interest={body.get('interest','')}"
