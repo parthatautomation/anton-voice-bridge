@@ -69,6 +69,10 @@ MAX_BUFFER_SECONDS = 25
 
 app = FastAPI(title="Anton Automation Voice Bridge")
 
+# In-memory store: call_uuid → lead context
+# Populated by /dial-out, consumed by /stream WebSocket
+CALL_CONTEXT: dict = {}
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # CALL SESSION STATE
@@ -273,19 +277,16 @@ async def plivo_answer(request: Request):
     interest = params.get("interest", "")
     language = params.get("language", "hi-IN")
 
-    stream_url = (
-        f"{PUBLIC_WS_URL}/stream"
-        f"?lead_id={lead_id}"
-        f"&amp;name={name}"
-        f"&amp;interest={interest}"
-        f"&amp;language={language}"
-    )
+    # Store lead context in a simple in-memory dict keyed by call UUID
+    # Plivo will pass CallUUID in the start event so we can retrieve it
+    # For now pass minimal params — avoid & in XML which breaks Plivo's parser
+    stream_url = f"{PUBLIC_WS_URL}/stream"
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Stream bidirectional="true" keepCallAlive="true" streamTimeout="3600" contentType="audio/x-mulaw;rate=8000">{stream_url}</Stream>
 </Response>"""
-    log.info(f"Returning Stream XML with URL: {PUBLIC_WS_URL}/stream")
+    log.info(f"Returning Stream XML — WebSocket URL: {stream_url}")
     return PlainTextResponse(content=xml, media_type="text/xml")
 
 
@@ -295,13 +296,14 @@ async def plivo_answer(request: Request):
 @app.websocket("/stream")
 async def stream_endpoint(websocket: WebSocket):
     await websocket.accept()
+    log.info(f"WebSocket /stream connected from {websocket.client}")
 
-    query = dict(websocket.query_params)
+    # Default lead — will be overridden from start event or CALL_CONTEXT
     lead = {
-        "leadId": query.get("lead_id", ""),
-        "name": query.get("name", "there"),
-        "interest": query.get("interest", "your enquiry"),
-        "language": query.get("language", "hi-IN"),
+        "leadId": "",
+        "name": "there",
+        "interest": "your enquiry",
+        "language": "hi-IN",
     }
 
     session: Optional[CallSession] = None
@@ -316,8 +318,28 @@ async def stream_endpoint(websocket: WebSocket):
                 start_data = event["start"]
                 stream_id = start_data["streamId"]
                 call_uuid = start_data.get("callId", "")
+
+                # Try to get lead context from CALL_CONTEXT
+                # Plivo start event has callId which maps to our stored context
+                stored = None
+                for key, val in CALL_CONTEXT.items():
+                    if key in call_uuid or call_uuid in key:
+                        stored = val
+                        break
+                # Also check query params as fallback
+                query = dict(websocket.query_params)
+                if stored:
+                    lead.update(stored)
+                elif query.get("lead_id"):
+                    lead = {
+                        "leadId": query.get("lead_id", ""),
+                        "name": query.get("name", "there"),
+                        "interest": query.get("interest", "your enquiry"),
+                        "language": query.get("language", "hi-IN"),
+                    }
+
                 session = CallSession(stream_id, call_uuid, lead, websocket)
-                log.info(f"Call started: {call_uuid} for lead {lead['name']} language={lead['language']}")
+                log.info(f"Call started: {call_uuid} for lead={lead['name']} lang={lead['language']}")
 
                 # Open the conversation — Akriti speaks first
                 lang = lead["language"]
@@ -575,7 +597,18 @@ async def dial_out(request: Request):
                 "answer_method": "POST",
             },
         )
-    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    result = resp.json()
+    # Store lead context keyed by request_uuid so WebSocket can retrieve it
+    req_uuid = result.get("request_uuid", "")
+    if req_uuid:
+        CALL_CONTEXT[req_uuid] = {
+            "leadId": body.get("lead_id", ""),
+            "name": body.get("name", "there"),
+            "interest": body.get("interest", "your enquiry"),
+            "language": body.get("language", "hi-IN"),
+        }
+        log.info(f"Stored lead context for request_uuid: {req_uuid}")
+    return JSONResponse(content=result, status_code=resp.status_code)
 
 
 @app.get("/health")
