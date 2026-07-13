@@ -185,17 +185,18 @@ async def sarvam_tts(text: str, language: str) -> bytes:
             json={
                 "inputs": [text],
                 "target_language_code": language,
-                "speaker": "simran",
-                "model": "bulbul:v3",
+                "speaker": "meera",
+                "model": "bulbul:v2",
                 "pace": 1.0,
                 "speech_sample_rate": 8000,
-                "output_audio_codec": "mulaw",
             },
         )
         resp.raise_for_status()
         data = resp.json()
         b64_audio = data["audios"][0]
-        return base64.b64decode(b64_audio)
+        wav_bytes = base64.b64decode(b64_audio)
+        # Sarvam returns WAV — convert to raw mulaw for Plivo
+        return wav_to_mulaw(wav_bytes)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -214,6 +215,29 @@ def mulaw_to_wav(mulaw_bytes: bytes, sample_rate: int = 8000) -> bytes:
         wf.setframerate(sample_rate)
         wf.writeframes(pcm)
     return buf.getvalue()
+
+
+def wav_to_mulaw(wav_bytes: bytes) -> bytes:
+    """Convert WAV bytes from Sarvam TTS to raw mulaw 8kHz bytes for Plivo."""
+    import wave
+    import io
+    buf = io.BytesIO(wav_bytes)
+    with wave.open(buf, "rb") as wf:
+        pcm = wf.readframes(wf.getnframes())
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        framerate = wf.getframerate()
+    # Convert to mono if stereo
+    if n_channels == 2:
+        pcm = audioop.tomono(pcm, sampwidth, 0.5, 0.5)
+    # Convert sample width to 2 bytes if needed
+    if sampwidth != 2:
+        pcm = audioop.lin2lin(pcm, sampwidth, 2)
+    # Resample to 8000 Hz if needed
+    if framerate != 8000:
+        pcm, _ = audioop.ratecv(pcm, 2, 1, framerate, 8000, None)
+    # Convert linear PCM to mulaw
+    return audioop.lin2ulaw(pcm, 2)
 
 
 def parse_status_block(reply_text: str) -> tuple[str, dict]:
