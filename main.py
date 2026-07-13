@@ -145,7 +145,7 @@ async def sarvam_stt(audio_mulaw_8k: bytes, language: str) -> str:
             f"{SARVAM_BASE}/speech-to-text",
             headers={"api-subscription-key": SARVAM_API_KEY},
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            data={"model": "saarika:v2", "language_code": language},
+            data={"model": "saarika:v2.5", "language_code": language},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -174,7 +174,7 @@ async def sarvam_chat(messages: list[dict]) -> str:
 
 
 async def sarvam_tts(text: str, language: str) -> bytes:
-    """Text-to-speech via Sarvam Bulbul. Returns raw mulaw 8kHz bytes ready for Plivo."""
+    """Text-to-speech via Sarvam Bulbul v3. Returns raw mulaw 8kHz bytes ready for Plivo."""
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             f"{SARVAM_BASE}/text-to-speech",
@@ -185,17 +185,18 @@ async def sarvam_tts(text: str, language: str) -> bytes:
             json={
                 "inputs": [text],
                 "target_language_code": language,
-                "speaker": "meera",
+                "speaker": "anushka",
                 "model": "bulbul:v2",
-                "pace": 1.0,
+                "pace": 1.1,
                 "speech_sample_rate": 8000,
+                "loudness": 1.5,
             },
         )
         resp.raise_for_status()
         data = resp.json()
         b64_audio = data["audios"][0]
         wav_bytes = base64.b64decode(b64_audio)
-        # Sarvam returns WAV — convert to raw mulaw for Plivo
+        # Sarvam returns WAV at 8kHz — convert to raw mulaw for Plivo
         return wav_to_mulaw(wav_bytes)
 
 
@@ -442,7 +443,9 @@ async def run_one_turn(session: CallSession, audio_chunk: bytes):
 async def speak_to_caller(session: CallSession, text: str):
     """Generate TTS audio and stream it back to Plivo via the same WebSocket."""
     try:
+        log.info(f"TTS: generating audio for: {text[:80]}")
         mulaw_audio = await sarvam_tts(text, session.lead["language"])
+        log.info(f"TTS: got {len(mulaw_audio)} bytes of mulaw audio")
     except Exception as e:
         log.error(f"TTS failed: {e}")
         return
