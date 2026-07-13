@@ -273,13 +273,20 @@ async def plivo_answer(request: Request):
     interest = params.get("interest", "")
     language = params.get("language", "hi-IN")
 
-    stream_url = f"{PUBLIC_WS_URL}?lead_id={lead_id}&name={name}&interest={interest}&language={language}"
+    stream_url = (
+        f"{PUBLIC_WS_URL}/stream"
+        f"?lead_id={lead_id}"
+        f"&amp;name={name}"
+        f"&amp;interest={interest}"
+        f"&amp;language={language}"
+    )
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" statusCallbackUrl="https://workflow.parthkalyani.in/webhook/plivo-hangup">{stream_url}</Stream>
+  <Stream bidirectional="true" keepCallAlive="true" streamTimeout="3600" contentType="audio/x-mulaw;rate=8000">{stream_url}</Stream>
 </Response>"""
-    return PlainTextResponse(content=xml, media_type="application/xml")
+    log.info(f"Returning Stream XML with URL: {PUBLIC_WS_URL}/stream")
+    return PlainTextResponse(content=xml, media_type="text/xml")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -310,18 +317,29 @@ async def stream_endpoint(websocket: WebSocket):
                 stream_id = start_data["streamId"]
                 call_uuid = start_data.get("callId", "")
                 session = CallSession(stream_id, call_uuid, lead, websocket)
-                log.info(f"Call started: {call_uuid} for lead {lead['name']}")
+                log.info(f"Call started: {call_uuid} for lead {lead['name']} language={lead['language']}")
 
                 # Open the conversation — Akriti speaks first
-                greeting = (
-                    f"Namaste {lead['name']} ji, main Akriti Patel bol rahi hoon Anton Automation se. "
-                    f"Aapne {lead['interest']} ke liye enquiry ki thi. Kya aap 2 minute baat kar sakte hain?"
-                    if lead["language"] in ("hi-IN", "gu-IN", "mr-IN")
-                    else f"Hi {lead['name']}, this is Akriti Patel from Anton Automation regarding {lead['interest']}. "
-                         f"Do you have a couple of minutes to talk?"
-                )
+                lang = lead["language"]
+                name = lead["name"]
+                interest = lead["interest"]
+
+                if lang == "gu-IN":
+                    greeting = f"Namaste {name} bhai! Hoon Akriti Patel, Anton Automation thi. Tamne {interest} mate enquiry kari hati. Shu 2 minute vaat kari shakiye?"
+                elif lang in ("hi-IN", "mr-IN"):
+                    greeting = f"Namaste {name} ji, main Akriti Patel bol rahi hoon Anton Automation se. Aapne {interest} ke liye enquiry ki thi. Kya aap 2 minute baat kar sakte hain?"
+                elif lang == "ta-IN":
+                    greeting = f"Vanakkam {name}! Naan Akriti Patel, Anton Automation irundhu pesugiren. Ungal {interest} pathi pesalama?"
+                elif lang == "te-IN":
+                    greeting = f"Namaskaram {name}! Nenu Akriti Patel, Anton Automation nundi. Mee {interest} gurinchi matladacha?"
+                elif lang == "kn-IN":
+                    greeting = f"Namaskara {name}! Naanu Akriti Patel, Anton Automation inda. Nimage {interest} bagge maatanaduva?"
+                else:
+                    greeting = f"Hi {name}, this is Akriti Patel from Anton Automation regarding {interest}. Do you have a couple of minutes to talk?"
+
                 session.transcript_log.append({"role": "assistant", "text": greeting})
-                await speak_to_caller(session, greeting)
+                # Run TTS in background so WebSocket loop stays responsive
+                asyncio.create_task(speak_to_caller(session, greeting))
 
             elif event_type == "media" and session:
                 payload_b64 = event["media"]["payload"]
