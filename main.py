@@ -491,10 +491,22 @@ async def dial_out(request: Request):
                      plivo_auth_id, plivo_auth_token }
     """
     body = await request.json()
-    to_number = body["to"]
-    from_number = body["from"]
     plivo_auth_id = body["plivo_auth_id"]
     plivo_auth_token = body["plivo_auth_token"]
+
+    # Normalize to E.164 format for India
+    # Strip all non-digits, ensure starts with 91, then add +
+    def normalize_india(num: str) -> str:
+        digits = ''.join(filter(str.isdigit, str(num)))
+        if digits.startswith('91') and len(digits) == 12:
+            return '+' + digits          # +919157060803
+        elif len(digits) == 10:
+            return '+91' + digits        # +919157060803
+        return '+' + digits              # fallback
+
+    to_number = normalize_india(body["to"])
+    from_number = normalize_india(body["from"])
+    log.info(f"Dial-out: from={from_number} to={to_number}")
 
     base_url = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
     answer_url = (
