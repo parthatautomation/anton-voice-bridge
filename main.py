@@ -50,7 +50,9 @@ log = logging.getLogger("voice-bridge")
 
 # ── Configuration (env vars, set these on your hosting platform) ─────────────
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
-PUBLIC_WS_URL = os.getenv("PUBLIC_WS_URL", "wss://your-service.example.com/stream")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
+# Derive WebSocket URL from base URL automatically
+PUBLIC_WS_URL = os.getenv("PUBLIC_WS_URL", PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://"))
 N8N_CALLBACK_URL = os.getenv(
     "N8N_CALLBACK_URL",
     "https://workflow.parthkalyani.in/webhook/anton-call-callback"
