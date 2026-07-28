@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("voice-bridge")
 
 # ── Configuration (env vars, set these on your hosting platform) ─────────────
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
 # Derive WebSocket URL from base URL automatically
 PUBLIC_WS_URL = os.getenv("PUBLIC_WS_URL", PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://"))
@@ -149,8 +149,10 @@ async def sarvam_stt(audio_mulaw_8k: bytes, language: str) -> str:
             f"{SARVAM_BASE}/speech-to-text",
             headers={"api-subscription-key": SARVAM_API_KEY},
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            data={"model": "saarika:v2.5", "language_code": language},
+            data={"model": "saaras:v3", "language_code": language},
         )
+        if not resp.is_success:
+            log.error(f"STT error body: {resp.text}")
         resp.raise_for_status()
         data = resp.json()
         return data.get("transcript", "").strip()
@@ -178,7 +180,9 @@ async def sarvam_chat(messages: list[dict]) -> str:
 
 
 async def sarvam_tts(text: str, language: str) -> bytes:
-    """Text-to-speech via Sarvam Bulbul v3. Returns raw mulaw 8kHz bytes ready for Plivo."""
+    """Text-to-speech via Sarvam Bulbul v2. Returns raw mulaw 8kHz bytes ready for Plivo."""
+    key_preview = SARVAM_API_KEY[:8] + "..." + SARVAM_API_KEY[-4:] if len(SARVAM_API_KEY) > 12 else "TOO_SHORT"
+    log.info(f"TTS using key: {key_preview} (length={len(SARVAM_API_KEY)})")
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             f"{SARVAM_BASE}/text-to-speech",
@@ -196,6 +200,11 @@ async def sarvam_tts(text: str, language: str) -> bytes:
                 "loudness": 1.5,
             },
         )
+        if not resp.is_success:
+            request_id = resp.headers.get("x-request-id", "not-found")
+            log.error(f"TTS error body: {resp.text}")
+            log.error(f"TTS x-request-id: {request_id}")
+            log.error(f"TTS key length: {len(SARVAM_API_KEY)} first8: {SARVAM_API_KEY[:8]} last4: {SARVAM_API_KEY[-4:]}")
         resp.raise_for_status()
         data = resp.json()
         b64_audio = data["audios"][0]
@@ -611,6 +620,66 @@ async def dial_out(request: Request):
     return JSONResponse(content=result, status_code=resp.status_code)
 
 
+@app.get("/test-sarvam")
+async def test_sarvam():
+    """Test Sarvam API key directly — call this to verify TTS works before making calls."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{SARVAM_BASE}/text-to-speech",
+                headers={
+                    "api-subscription-key": SARVAM_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "inputs": ["Namaste, yeh ek test hai."],
+                    "target_language_code": "hi-IN",
+                    "speaker": "anushka",
+                    "model": "bulbul:v2",
+                    "pace": 1.0,
+                    "speech_sample_rate": 8000,
+                },
+            )
+        return JSONResponse(content={
+            "status_code": resp.status_code,
+            "key_prefix": SARVAM_API_KEY[:12] + "..." if SARVAM_API_KEY else "NOT SET",
+            "response_body": resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200],
+            "success": resp.is_success
+        })
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "anton-voice-bridge"}
+
+@app.get("/test-sarvam")
+async def test_sarvam():
+    """Test Sarvam API key directly — call this to diagnose 403 issues."""
+    key_preview = SARVAM_API_KEY[:12] + "..." if len(SARVAM_API_KEY) > 12 else "TOO_SHORT"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{SARVAM_BASE}/text-to-speech",
+                headers={
+                    "api-subscription-key": SARVAM_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "inputs": ["Namaste"],
+                    "target_language_code": "hi-IN",
+                    "speaker": "anushka",
+                    "model": "bulbul:v2",
+                    "speech_sample_rate": 8000,
+                },
+            )
+            return {
+                "status_code": resp.status_code,
+                "key_preview": key_preview,
+                "key_length": len(SARVAM_API_KEY),
+                "response_body": resp.text[:200],
+                "success": resp.is_success
+            }
+    except Exception as e:
+        return {"error": str(e), "key_preview": key_preview, "key_length": len(SARVAM_API_KEY)}
