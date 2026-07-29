@@ -286,14 +286,20 @@ async def plivo_answer(request: Request):
     interest = params.get("interest", "")
     language = params.get("language", "hi-IN")
 
-    from urllib.parse import quote
-    stream_url = (
-        f"{PUBLIC_WS_URL}/stream"
-        f"?lead_id={quote(lead_id)}"
-        f"&name={quote(name)}"
-        f"&interest={quote(interest)}"
-        f"&language={quote(language)}"
-    )
+    # Store lead context keyed by a session token passed in the stream path
+    # This avoids & in XML which breaks Plivo's parser
+    import hashlib
+    session_token = hashlib.md5(f"{lead_id}{name}{language}".encode()).hexdigest()[:8]
+    CALL_CONTEXT[session_token] = {
+        "leadId": lead_id,
+        "name": name,
+        "interest": interest,
+        "language": language,
+    }
+    log.info(f"Stored session token: {session_token} for lead={name} lang={language}")
+
+    # Clean stream URL with no query params — token in path instead
+    stream_url = f"{PUBLIC_WS_URL}/stream/{session_token}"
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -306,22 +312,19 @@ async def plivo_answer(request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 # THE LIVE CALL LOOP
 # ──────────────────────────────────────────────────────────────────────────
-@app.websocket("/stream")
-async def stream_endpoint(websocket: WebSocket):
+@app.websocket("/stream/{session_token}")
+async def stream_endpoint(websocket: WebSocket, session_token: str):
     await websocket.accept()
-    log.info(f"WebSocket /stream connected from {websocket.client}")
+    log.info(f"WebSocket /stream/{session_token} connected from {websocket.client}")
 
-    # Read query params — Plivo passes them from the Stream URL
-    query = dict(websocket.query_params)
-    log.info(f"WebSocket query params: {query}")
-
-    # Build lead from query params first (most reliable)
-    lead = {
-        "leadId": query.get("lead_id", ""),
-        "name": query.get("name", "there"),
-        "interest": query.get("interest", "your enquiry"),
-        "language": query.get("language", "hi-IN"),
-    }
+    # Retrieve lead context from session token
+    lead = CALL_CONTEXT.get(session_token, {
+        "leadId": "",
+        "name": "there",
+        "interest": "your enquiry",
+        "language": "hi-IN",
+    })
+    log.info(f"Lead context: name={lead['name']} lang={lead['language']} interest={lead['interest']}")
 
     session: Optional[CallSession] = None
 
@@ -335,26 +338,6 @@ async def stream_endpoint(websocket: WebSocket):
                 start_data = event["start"]
                 stream_id = start_data["streamId"]
                 call_uuid = start_data.get("callId", "")
-
-                # Try to get lead context from CALL_CONTEXT
-                # Plivo start event has callId which maps to our stored context
-                stored = None
-                for key, val in CALL_CONTEXT.items():
-                    if key in call_uuid or call_uuid in key:
-                        stored = val
-                        break
-                # Also check query params as fallback
-                query = dict(websocket.query_params)
-                if stored:
-                    lead.update(stored)
-                elif query.get("lead_id"):
-                    lead = {
-                        "leadId": query.get("lead_id", ""),
-                        "name": query.get("name", "there"),
-                        "interest": query.get("interest", "your enquiry"),
-                        "language": query.get("language", "hi-IN"),
-                    }
-
                 session = CallSession(stream_id, call_uuid, lead, websocket)
                 log.info(f"Call started: {call_uuid} for lead={lead['name']} lang={lead['language']}")
 
