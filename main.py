@@ -19,11 +19,12 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMMessagesFrame
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.serializers.plivo import PlivoFrameSerializer
 from pipecat.services.sarvam.llm import SarvamLLMService
 from pipecat.services.sarvam.stt import SarvamSTTService
@@ -227,8 +228,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
     ]
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
+    context = LLMContext(messages)
+    context_aggregator = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline([
         transport.input(),
@@ -253,12 +254,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         logger.info("Caller connected — sending Hindi greeting")
         greeting = f"Namaste {lead['name']} ji! Main Akriti Patel bol rahi hoon Anton Automation se. Aapne {lead['interest']} ke liye enquiry ki thi. Kya aap 2 minute baat kar sakte hain?"
         messages.append({"role": "system", "content": f"Say exactly this greeting now: {greeting}"})
-        await task.queue_frames([LLMMessagesFrame(messages)])
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_disconnected(transport, client):
         logger.info("Caller disconnected — posting to n8n")
-        for msg in context.messages:
+        for msg in messages:
             if msg.get("role") in ("user", "assistant"):
                 content = msg.get("content", "")
                 if isinstance(content, str):
