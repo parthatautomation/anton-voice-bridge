@@ -1,6 +1,6 @@
 """
 Anton Automation — Live Call Bridge (Pipecat Edition)
-Fixes: STATUS stripping via TTSTextFrame, faster LLM, better prompts
+Clean architecture: Plivo → WebSocket → Pipecat → Sarvam AI (STT/LLM/TTS)
 """
 
 import asyncio
@@ -14,18 +14,12 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import (
-    Frame,
-    TextFrame,
-    LLMTextFrame,
-    TTSTextFrame,
-)
+from pipecat.frames.frames import TextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.serializers.plivo import PlivoFrameSerializer
 from pipecat.services.sarvam.llm import SarvamLLMService
 from pipecat.services.sarvam.stt import SarvamSTTService
@@ -45,26 +39,25 @@ PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
 WS_BASE_URL = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
 CALL_CONTEXT: dict = {}
 
-SYSTEM_PROMPT = """You are Akriti, sales agent at Anton Automation (conveyor systems manufacturer, India).
+SYSTEM_PROMPT = """You are Akriti, sales agent at Anton Automation (conveyor system manufacturer, India).
 
-LANGUAGE: Start Hindi. Match caller's language instantly.
-STYLE: 1 short sentence only. Phone call style.
+LANGUAGE: Start Hindi. Match caller's language instantly. Never mix.
+STYLE: 1 short sentence only. Natural phone call.
 
-GOAL: Collect 5 things one by one:
+GOAL - collect 5 things one by one:
 1. Material to convey
-2. Weight per unit/meter  
+2. Weight per unit/meter
 3. Length needed (metres)
 4. Location/use
 5. Timeline
 
-If asked about company: "Hum India mein belt, screw aur chain conveyors banate hain industries ke liye."
-If confused: Apologize and re-explain simply.
-If all 5 collected: Offer free site visit.
-If not interested: Thank and end.
+If asked about company: "Hum belt, screw aur chain conveyors banate hain — mining, cement, pharma sab industries ke liye."
+If confused: Apologize and re-explain simply in 1 sentence.
+If all 5 collected: "Perfect! Free site visit aur quotation arrange karta hoon — aapka location?"
+If not interested: Thank briefly and end.
 If wants engineer: "Abhi connect karti hoon."
 
-After reply write on new line (NEVER SPEAK):
-###STATUS###{"p":null,"w":null,"d":null,"a":null,"t":null,"ni":false,"wh":false,"done":false}"""
+Keep every response to maximum 1 sentence. Be warm and direct."""
 
 
 def normalize_india(num: str) -> str:
@@ -98,35 +91,6 @@ async def post_to_n8n(lead: dict, transcript: list, status: dict):
             logger.info(f"n8n callback: {resp.status_code}")
     except Exception as e:
         logger.error(f"n8n callback failed: {e}")
-
-
-class StatusStripperProcessor(FrameProcessor):
-    """
-    Intercepts ALL text frame types before TTS and strips ###STATUS### JSON.
-    Pipecat sends LLM output as TTSTextFrame to TTS — we must catch that type.
-    """
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-
-        if isinstance(frame, (TextFrame, LLMTextFrame, TTSTextFrame)):
-            text = (frame.text or "").strip()
-
-            # Case 1: Entire frame is the STATUS block — drop it completely
-            if text.startswith("###STATUS###") or text.startswith("{\"product\""):
-                logger.debug(f"STATUS frame dropped: {text[:50]}")
-                return  # Do NOT push downstream
-
-            # Case 2: STATUS is inline after spoken text — split and keep only spoken part
-            if "###STATUS###" in text:
-                spoken = text.split("###STATUS###")[0].strip()
-                if spoken:
-                    await self.push_frame(type(frame)(text=spoken), direction)
-                return  # Drop the status part
-
-            # Case 3: Normal frame — pass through
-            await self.push_frame(frame, direction)
-        else:
-            await self.push_frame(frame, direction)
 
 
 app = FastAPI(title="Anton Automation Voice Bridge")
@@ -236,14 +200,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     context = LLMContext(messages)
     context_aggregator = LLMContextAggregatorPair(context)
-    status_stripper = StatusStripperProcessor()
 
     pipeline = Pipeline([
         transport.input(),
         stt,
         context_aggregator.user(),
         llm,
-        status_stripper,  # Must be BEFORE tts
         tts,
         transport.output(),
         context_aggregator.assistant(),
@@ -274,18 +236,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         logger.info("Caller disconnected — posting to n8n")
         for msg in messages:
             if msg.get("role") in ("user", "assistant"):
-                content = msg.get("content", "")
-                if isinstance(content, str) and content:
-                    spoken = content.split("###STATUS###")[0].strip()
-                    if spoken:
-                        transcript.append({"role": msg["role"], "content": spoken})
-                    if "###STATUS###" in content:
-                        try:
-                            status_json = content.split("###STATUS###")[1].strip()
-                            status = json.loads(status_json)
-                            final_status.update(status)
-                        except Exception:
-                            pass
+                content_text = msg.get("content", "")
+                if isinstance(content_text, str) and content_text.strip():
+                    transcript.append({"role": msg["role"], "content": content_text.strip()})
         await task.cancel()
         await post_to_n8n(lead, transcript, final_status)
 
