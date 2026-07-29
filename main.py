@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import TextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -251,10 +251,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
-        logger.info("Caller connected — sending Hindi greeting")
+        logger.info("Caller connected — sending Hindi greeting via TTS directly")
         greeting = f"Namaste {lead['name']} ji! Main Akriti Patel bol rahi hoon Anton Automation se. Aapne {lead['interest']} ke liye enquiry ki thi. Kya aap 2 minute baat kar sakte hain?"
-        messages.append({"role": "system", "content": f"Say exactly this greeting now: {greeting}"})
-        await task.queue_frames([LLMRunFrame()])
+        # Send greeting directly as TTS text frame — bypasses LLM for instant response
+        from pipecat.frames.frames import TextFrame
+        messages.append({"role": "assistant", "content": greeting})
+        await task.queue_frames([TextFrame(text=greeting)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_disconnected(transport, client):
