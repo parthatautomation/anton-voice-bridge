@@ -1,11 +1,6 @@
 """
 Anton Automation — Live Call Bridge (Pipecat Edition)
-======================================================
-Uses Pipecat's native Plivo serializer + Sarvam AI services (STT, LLM, TTS)
-Based on Sarvam's official documentation: docs.sarvam.ai/api/integration
-
-Requirements:
-  pip install "pipecat-ai[websocket,sarvam,silero]" fastapi uvicorn httpx python-dotenv loguru aiohttp
+Fixes: STATUS stripping via TTSTextFrame, faster LLM, better prompts
 """
 
 import asyncio
@@ -19,12 +14,18 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import TextFrame
+from pipecat.frames.frames import (
+    Frame,
+    TextFrame,
+    LLMTextFrame,
+    TTSTextFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.serializers.plivo import PlivoFrameSerializer
 from pipecat.services.sarvam.llm import SarvamLLMService
 from pipecat.services.sarvam.stt import SarvamSTTService
@@ -41,30 +42,40 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up
 N8N_CALLBACK_URL = os.getenv("N8N_CALLBACK_URL", "https://workflow.parthkalyani.in/webhook/anton-call-callback")
 PLIVO_AUTH_ID = os.getenv("PLIVO_AUTH_ID", "MAMTDKN2NIZDKTZJQ2ZI")
 PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
-
 WS_BASE_URL = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
 CALL_CONTEXT: dict = {}
 
-SYSTEM_PROMPT = """You are Akriti Patel, sales executive at Anton Automation — a conveyor system manufacturer in India.
+SYSTEM_PROMPT = """You are Akriti Patel, sales executive at Anton Automation — India's trusted conveyor system manufacturer.
 
-LANGUAGE: Start in Hindi. Switch instantly to whatever language the caller uses. Never mix languages.
+Anton Automation designs, manufactures and installs:
+- Belt Conveyors, Screw Conveyors, Chain Conveyors, Bucket Elevators, Slat Conveyors
+- Industries served: Mining, Stone Crushing, Cement, Pharma, Food Processing, Packaging, Warehouses
+- Pan-India installation, custom-built solutions, 8+ years experience
 
-STYLE: Very short — max 1 sentence per response. Like a real phone call. Direct and warm.
+LANGUAGE RULE: Start in Hindi. Instantly switch to caller's language (Gujarati/English/etc). Never mix.
 
-YOUR TASK — collect these 5 details, one at a time:
-1. Material to be conveyed (stone, coal, cement, etc.)
+CONVERSATION RULES:
+- Max 1 sentence per response. Short. Natural. Like a real phone call.
+- If caller asks about the company: give a brief 1-sentence answer covering what you make and who you serve, then move to qualification.
+- If caller says "samjha nahi" or "didn't understand": apologize briefly and re-explain simply.
+- Never repeat the greeting.
+- Never speak the STATUS block — it is strictly backend only.
+
+YOUR GOAL — collect these 5 details one at a time:
+1. Material to convey (stone, coal, cement, boxes, etc.)
 2. Weight per unit or per meter
-3. Conveyor length needed (metres)
-4. Where it will be used (plant, warehouse, quarry, etc.)
-5. When they need it
+3. Conveyor length in metres
+4. Location/application (quarry, plant, warehouse, etc.)
+5. When they need it (timeline)
 
-Once you have all 5, say: "Perfect. I'll arrange a free site visit and quotation. Can I confirm your location?"
+Once all 5 collected: "Perfect! Main aapke liye ek free site visit aur quotation arrange karta/karti hoon — aapka location kya hai?"
 
-If not interested: thank briefly and end.
-If wants human: say "Connecting you to our engineer now."
+If not interested: thank briefly and end warmly.
+If wants human/engineer: "Ji bilkul, main abhi aapko hamare engineer se connect karti hoon."
 
-After your response add on a new line (NEVER SPEAK THIS):
-###STATUS###{"product":null,"weight":null,"distance":null,"application":null,"timeline":null,"not_interested":false,"wants_human":false,"call_complete":false}"""
+AFTER YOUR RESPONSE — on a new line, write this (NEVER SPEAK IT):
+###STATUS###{"product":null,"weight":null,"distance":null,"application":null,"timeline":null,"not_interested":false,"wants_human":false,"call_complete":false}
+Update JSON values as you learn them."""
 
 
 def normalize_india(num: str) -> str:
@@ -74,17 +85,6 @@ def normalize_india(num: str) -> str:
     elif len(digits) == 10:
         return '+91' + digits
     return '+' + digits
-
-
-def extract_status(text: str) -> tuple:
-    if "###STATUS###" in text:
-        spoken, _, status_json = text.partition("###STATUS###")
-        try:
-            status = json.loads(status_json.strip())
-        except json.JSONDecodeError:
-            status = {}
-        return spoken.strip(), status
-    return text.strip(), {}
 
 
 async def post_to_n8n(lead: dict, transcript: list, status: dict):
@@ -99,9 +99,7 @@ async def post_to_n8n(lead: dict, transcript: list, status: dict):
         "criterion_scores": {k: 20 for k in ["product", "weight", "distance", "application", "timeline"] if status.get(k)},
         "criterion_answers": {k: status[k] for k in ["product", "weight", "distance", "application", "timeline"] if status.get(k)},
         "not_interested": status.get("not_interested", False),
-        "not_interested_reason": status.get("not_interested_reason", ""),
         "wants_human": status.get("wants_human", False),
-        "frustrated": status.get("frustrated", False),
         "attempt_number": 1,
         "direction": "outbound",
     }
@@ -113,12 +111,33 @@ async def post_to_n8n(lead: dict, transcript: list, status: dict):
         logger.error(f"n8n callback failed: {e}")
 
 
-def strip_status(text: str) -> str:
-    """Remove ###STATUS### JSON block from LLM response before TTS speaks it."""
-    if "###STATUS###" in text:
-        spoken = text.split("###STATUS###")[0].strip()
-        return spoken
-    return text.strip()
+class StatusStripperProcessor(FrameProcessor):
+    """
+    Intercepts ALL text frame types before TTS and strips ###STATUS### JSON.
+    Pipecat sends LLM output as TTSTextFrame to TTS — we must catch that type.
+    """
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, (TextFrame, LLMTextFrame, TTSTextFrame)):
+            text = (frame.text or "").strip()
+
+            # Case 1: Entire frame is the STATUS block — drop it completely
+            if text.startswith("###STATUS###") or text.startswith("{\"product\""):
+                logger.debug(f"STATUS frame dropped: {text[:50]}")
+                return  # Do NOT push downstream
+
+            # Case 2: STATUS is inline after spoken text — split and keep only spoken part
+            if "###STATUS###" in text:
+                spoken = text.split("###STATUS###")[0].strip()
+                if spoken:
+                    await self.push_frame(type(frame)(text=spoken), direction)
+                return  # Drop the status part
+
+            # Case 3: Normal frame — pass through
+            await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
 
 
 app = FastAPI(title="Anton Automation Voice Bridge")
@@ -126,7 +145,12 @@ app = FastAPI(title="Anton Automation Voice Bridge")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "anton-voice-bridge", "pipecat": "enabled", "sarvam_key_length": len(SARVAM_API_KEY)}
+    return {
+        "status": "ok",
+        "service": "anton-voice-bridge",
+        "pipecat": "enabled",
+        "sarvam_key_length": len(SARVAM_API_KEY),
+    }
 
 
 @app.post("/plivo-answer")
@@ -146,7 +170,6 @@ async def plivo_answer(request: Request):
 <Response>
   <Stream bidirectional="true" keepCallAlive="true" streamTimeout="3600" contentType="audio/x-mulaw;rate=8000">{ws_url}</Stream>
 </Response>"""
-    logger.info(f"Stream XML: {ws_url}")
     return PlainTextResponse(content=xml, media_type="text/xml")
 
 
@@ -155,15 +178,16 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     await websocket.accept()
     logger.info(f"WebSocket /ws/{token} connected")
 
-    lead = CALL_CONTEXT.get(token, {"leadId": "", "name": "there", "interest": "your enquiry", "language": "hi-IN"})
-    logger.info(f"Lead: name={lead['name']} lang={lead['language']} interest={lead['interest']}")
+    lead = CALL_CONTEXT.get(token, {
+        "leadId": "", "name": "there", "interest": "your enquiry", "language": "hi-IN"
+    })
+    logger.info(f"Lead: name={lead['name']} lang={lead['language']}")
 
     transcript = []
     final_status = {}
     stream_id = ""
     call_id = ""
 
-    # Get start event for stream_id and call_id
     try:
         first_msg = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
         data = json.loads(first_msg)
@@ -171,8 +195,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             stream_id = data["start"].get("streamId", "")
             call_id = data["start"].get("callId", "")
             logger.info(f"Call started: stream={stream_id} call={call_id}")
-        else:
-            logger.warning(f"Expected start event, got: {data.get('event')}")
     except Exception as e:
         logger.error(f"Failed to get start event: {e}")
         await websocket.close()
@@ -222,32 +244,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         settings=SarvamLLMService.Settings(model="sarvam-30b"),
     )
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     context = LLMContext(messages)
     context_aggregator = LLMContextAggregatorPair(context)
-
-    from pipecat.processors.frame_processor import FrameProcessor
-    from pipecat.frames.frames import TextFrame, LLMTextFrame
-
-    class StatusStripperProcessor(FrameProcessor):
-        """Strips ###STATUS### JSON frames — drops them completely before TTS."""
-        async def process_frame(self, frame, direction):
-            await super().process_frame(frame, direction)
-            if isinstance(frame, (TextFrame, LLMTextFrame)):
-                text = frame.text.strip() if frame.text else ""
-                # Drop entire frame if it is or starts with ###STATUS###
-                if "###STATUS###" in text or text.startswith("{") or text.startswith("###"):
-                    return  # Swallow — don't push downstream
-                # Strip if status is inline with spoken text
-                if "###STATUS###" in text:
-                    spoken = text.split("###STATUS###")[0].strip()
-                    if spoken:
-                        await self.push_frame(type(frame)(text=spoken), direction)
-                    return
-            await self.push_frame(frame, direction)
-
     status_stripper = StatusStripperProcessor()
 
     pipeline = Pipeline([
@@ -255,7 +254,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         stt,
         context_aggregator.user(),
         llm,
-        status_stripper,
+        status_stripper,  # Must be BEFORE tts
         tts,
         transport.output(),
         context_aggregator.assistant(),
@@ -271,10 +270,13 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
-        logger.info("Caller connected — sending Hindi greeting via TTS directly")
-        greeting = f"Namaste {lead['name']} ji! Main Akriti Patel bol rahi hoon Anton Automation se. Aapne {lead['interest']} ke liye enquiry ki thi. Kya aap 2 minute baat kar sakte hain?"
-        # Send greeting directly as TTS text frame — bypasses LLM for instant response
-        from pipecat.frames.frames import TextFrame
+        logger.info("Caller connected — sending greeting via TTS")
+        greeting = (
+            f"Namaste {lead['name']} ji! "
+            f"Main Akriti Patel hoon Anton Automation se — "
+            f"aapne {lead['interest']} ke liye enquiry ki thi, "
+            f"kya aap 2 minute baat kar sakte hain?"
+        )
         messages.append({"role": "assistant", "content": greeting})
         await task.queue_frames([TextFrame(text=greeting)])
 
@@ -284,11 +286,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         for msg in messages:
             if msg.get("role") in ("user", "assistant"):
                 content = msg.get("content", "")
-                if isinstance(content, str):
-                    spoken, status = extract_status(content)
-                    transcript.append({"role": msg["role"], "content": spoken})
-                    if status:
-                        final_status.update(status)
+                if isinstance(content, str) and content:
+                    spoken = content.split("###STATUS###")[0].strip()
+                    if spoken:
+                        transcript.append({"role": msg["role"], "content": spoken})
+                    if "###STATUS###" in content:
+                        try:
+                            status_json = content.split("###STATUS###")[1].strip()
+                            status = json.loads(status_json)
+                            final_status.update(status)
+                        except Exception:
+                            pass
         await task.cancel()
         await post_to_n8n(lead, transcript, final_status)
 
