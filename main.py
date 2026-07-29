@@ -98,11 +98,14 @@ app = FastAPI(title="Anton Automation Voice Bridge")
 
 @app.get("/health")
 async def health():
+    plivo_token_set = len(PLIVO_AUTH_TOKEN) > 10
     return {
         "status": "ok",
         "service": "anton-voice-bridge",
         "pipecat": "enabled",
         "sarvam_key_length": len(SARVAM_API_KEY),
+        "plivo_auth_id": PLIVO_AUTH_ID[:8] + "...",
+        "plivo_token_set": plivo_token_set,
     }
 
 
@@ -158,7 +161,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         call_id=call_id,
         auth_id=PLIVO_AUTH_ID,
         auth_token=PLIVO_AUTH_TOKEN,
-        params=PlivoFrameSerializer.InputParams(auto_hang_up=True),
+        params=PlivoFrameSerializer.InputParams(auto_hang_up=False),
     )
 
     transport = FastAPIWebsocketTransport(
