@@ -219,7 +219,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     llm = SarvamLLMService(
         api_key=SARVAM_API_KEY,
-        settings=SarvamLLMService.Settings(model="sarvam-105b"),
+        settings=SarvamLLMService.Settings(model="sarvam-30b"),
     )
 
     messages = [
@@ -232,18 +232,19 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     from pipecat.frames.frames import TextFrame, LLMTextFrame
 
     class StatusStripperProcessor(FrameProcessor):
-        """Strips ###STATUS### JSON from LLM text before TTS speaks it."""
+        """Strips ###STATUS### JSON frames — drops them completely before TTS."""
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
             if isinstance(frame, (TextFrame, LLMTextFrame)):
-                text = frame.text.strip()
-                # Block entire frame if it contains or starts with ###STATUS###
+                text = frame.text.strip() if frame.text else ""
+                # Drop entire frame if it is or starts with ###STATUS###
+                if "###STATUS###" in text or text.startswith("{") or text.startswith("###"):
+                    return  # Swallow — don't push downstream
+                # Strip if status is inline with spoken text
                 if "###STATUS###" in text:
                     spoken = text.split("###STATUS###")[0].strip()
                     if spoken:
-                        new_frame = type(frame)(text=spoken)
-                        await self.push_frame(new_frame, direction)
-                    # Don't push the status part at all
+                        await self.push_frame(type(frame)(text=spoken), direction)
                     return
             await self.push_frame(frame, direction)
 
