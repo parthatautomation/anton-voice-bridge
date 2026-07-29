@@ -194,7 +194,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     llm = SarvamLLMService(
         api_key=SARVAM_API_KEY,
-        settings=SarvamLLMService.Settings(model="sarvam-30b"),
+        settings=SarvamLLMService.Settings(model="sarvam-105b"),
     )
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
