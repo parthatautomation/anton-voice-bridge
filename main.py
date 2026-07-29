@@ -45,7 +45,9 @@ PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
 WS_BASE_URL = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
 CALL_CONTEXT: dict = {}
 
-SYSTEM_PROMPT = """You are Akriti Patel, a conveyor system specialist at Anton Automation, an Indian conveyor manufacturer.
+SYSTEM_PROMPT = """You are Akriti Patel, a conveyor system specialist at Anton Automation, an Indian conveyor manufacturer based in India.
+
+Anton Automation manufactures custom conveyor systems including belt conveyors, screw conveyors, chain conveyors, slat conveyors, and bucket elevators for industries like mining, cement, pharma, food processing, packaging, and manufacturing.
 
 LANGUAGE RULES:
 - Always start in Hindi
@@ -58,6 +60,7 @@ CONVERSATION STYLE:
 - Keep responses to 1-2 short sentences only — this is a phone call
 - Be warm, professional, and natural
 - Acknowledge their answer before asking the next question
+- Do NOT read out or mention any JSON or status codes
 
 YOUR GOAL — qualify the lead on these 5 criteria one at a time:
 1. PRODUCT — what material or item needs to be conveyed
@@ -72,10 +75,10 @@ If not interested — ask why briefly, thank them warmly, end the call.
 If asks for human/manager — say connecting to specialist immediately.
 If sounds frustrated — acknowledge warmly and offer to connect a specialist.
 
-After EVERY response add this on a new line:
+IMPORTANT: After your spoken response, on a NEW LINE add status (this is hidden, never speak it):
 ###STATUS###{"product": null, "weight": null, "distance": null, "application": null, "timeline": null, "not_interested": false, "wants_human": false, "frustrated": false, "call_complete": false}
 
-Update JSON fields as you learn them. Set call_complete true when all 5 filled OR not_interested/wants_human is true."""
+Update the JSON fields as you learn them. Set call_complete true only when all 5 are filled OR not_interested/wants_human is true."""
 
 
 def normalize_india(num: str) -> str:
@@ -122,6 +125,14 @@ async def post_to_n8n(lead: dict, transcript: list, status: dict):
             logger.info(f"n8n callback: {resp.status_code}")
     except Exception as e:
         logger.error(f"n8n callback failed: {e}")
+
+
+def strip_status(text: str) -> str:
+    """Remove ###STATUS### JSON block from LLM response before TTS speaks it."""
+    if "###STATUS###" in text:
+        spoken = text.split("###STATUS###")[0].strip()
+        return spoken
+    return text.strip()
 
 
 app = FastAPI(title="Anton Automation Voice Bridge")
@@ -216,7 +227,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             model="bulbul:v3",
             voice="ishita",
             language="hi-IN",
-            pace=1.0,
+            pace=1.1,
         ),
     )
 
@@ -231,11 +242,30 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     context = LLMContext(messages)
     context_aggregator = LLMContextAggregatorPair(context)
 
+    from pipecat.processors.frame_processor import FrameProcessor
+    from pipecat.frames.frames import TextFrame, LLMTextFrame
+
+    class StatusStripperProcessor(FrameProcessor):
+        """Strips ###STATUS### JSON from LLM text before TTS speaks it."""
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, (TextFrame, LLMTextFrame)):
+                if "###STATUS###" in frame.text:
+                    spoken = frame.text.split("###STATUS###")[0].strip()
+                    if spoken:
+                        new_frame = type(frame)(text=spoken)
+                        await self.push_frame(new_frame, direction)
+                    return
+            await self.push_frame(frame, direction)
+
+    status_stripper = StatusStripperProcessor()
+
     pipeline = Pipeline([
         transport.input(),
         stt,
         context_aggregator.user(),
         llm,
+        status_stripper,
         tts,
         transport.output(),
         context_aggregator.assistant(),
