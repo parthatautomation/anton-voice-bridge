@@ -286,10 +286,14 @@ async def plivo_answer(request: Request):
     interest = params.get("interest", "")
     language = params.get("language", "hi-IN")
 
-    # Store lead context in a simple in-memory dict keyed by call UUID
-    # Plivo will pass CallUUID in the start event so we can retrieve it
-    # For now pass minimal params — avoid & in XML which breaks Plivo's parser
-    stream_url = f"{PUBLIC_WS_URL}/stream"
+    from urllib.parse import quote
+    stream_url = (
+        f"{PUBLIC_WS_URL}/stream"
+        f"?lead_id={quote(lead_id)}"
+        f"&name={quote(name)}"
+        f"&interest={quote(interest)}"
+        f"&language={quote(language)}"
+    )
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -307,12 +311,16 @@ async def stream_endpoint(websocket: WebSocket):
     await websocket.accept()
     log.info(f"WebSocket /stream connected from {websocket.client}")
 
-    # Default lead — will be overridden from start event or CALL_CONTEXT
+    # Read query params — Plivo passes them from the Stream URL
+    query = dict(websocket.query_params)
+    log.info(f"WebSocket query params: {query}")
+
+    # Build lead from query params first (most reliable)
     lead = {
-        "leadId": "",
-        "name": "there",
-        "interest": "your enquiry",
-        "language": "hi-IN",
+        "leadId": query.get("lead_id", ""),
+        "name": query.get("name", "there"),
+        "interest": query.get("interest", "your enquiry"),
+        "language": query.get("language", "hi-IN"),
     }
 
     session: Optional[CallSession] = None
@@ -608,6 +616,7 @@ async def dial_out(request: Request):
         )
     result = resp.json()
     # Store lead context keyed by request_uuid so WebSocket can retrieve it
+    # Store full lead context keyed by request_uuid
     req_uuid = result.get("request_uuid", "")
     if req_uuid:
         CALL_CONTEXT[req_uuid] = {
@@ -616,7 +625,7 @@ async def dial_out(request: Request):
             "interest": body.get("interest", "your enquiry"),
             "language": body.get("language", "hi-IN"),
         }
-        log.info(f"Stored lead context for request_uuid: {req_uuid}")
+        log.info(f"Stored lead context: {req_uuid} name={body.get('name')} lang={body.get('language')}")
     return JSONResponse(content=result, status_code=resp.status_code)
 
 
