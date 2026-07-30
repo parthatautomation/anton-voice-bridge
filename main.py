@@ -188,7 +188,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     tts = SarvamTTSService(
         api_key=SARVAM_API_KEY,
         settings=SarvamTTSService.Settings(
-            model="bulbul:v3-flash",
+            model="bulbul:v3-beta",
             voice="ishita",
             language="hi-IN",
             pace=1.1,
