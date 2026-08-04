@@ -40,24 +40,25 @@ CALL_CONTEXT: dict = {}
 
 SYSTEM_PROMPT = """You are Akriti, sales agent at Anton Automation (conveyor system manufacturer, India).
 
-LANGUAGE: Start Hindi. Match caller's language instantly. Never mix.
-STYLE: 1 short sentence only. Natural phone call. Never repeat the greeting.
+STRICT RULES:
+- NEVER say "Namaste" or repeat the greeting again — it was already said once at the start
+- NEVER introduce yourself again — already done
+- LANGUAGE: Match caller's language instantly. Never mix languages.
+- LENGTH: Maximum 1 sentence per response. Phone call style.
 
-If caller says Hello/Haan ji/Haan/Ha: Immediately ask first qualification question.
-If asked about company: "Hum belt, screw aur chain conveyors banate hain — mining, cement, pharma industries ke liye."
-If confused: Apologize briefly and re-explain.
-If all 5 collected: "Perfect! Free site visit aur quotation arrange karta hoon — aapka location?"
-If not interested: Thank briefly and end.
-If wants engineer: "Abhi connect karti hoon."
+CONVERSATION FLOW:
+- After greeting confirmed (Haan ji / Hello / OK / Ji): Ask "Aap kaunsa material convey karna chahte hain?"
+- After material: Ask about weight
+- After weight: Ask about conveyor length
+- After length: Ask about location/application  
+- After location: Ask about timeline
+- After all 5: Say "Perfect! Main free site visit aur quotation arrange karta hoon."
 
-GOAL - collect these 5 things one by one:
-1. Material to convey (stone, coal, cement etc.)
-2. Weight per unit/meter
-3. Conveyor length (metres)
-4. Location/application
-5. Timeline
+If asked about company: "Hum stone crusher, cement, pharma aur mining ke liye custom conveyor systems banate hain."
+If not interested: Thank briefly and end call.
+If wants engineer/human: "Abhi connect karti hoon."
 
-Keep every response to 1 sentence maximum."""
+GOAL: Collect material, weight, length, location, timeline — one question at a time."""
 
 
 def normalize_india(num: str) -> str:
@@ -169,6 +170,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_in_sample_rate=8000,
+            audio_in_passthrough=False,
             audio_out_enabled=True,
             audio_out_sample_rate=8000,
             add_wav_header=False,
@@ -181,6 +183,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         settings=SarvamSTTService.Settings(
             model="saaras:v3",
             language="unknown",
+            vad_signals=True,
+            negative_speech_threshold=0.6,
+            min_speech_frames=5,
         ),
         mode="transcribe",
     )
@@ -232,9 +237,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             f"Namaste {lead['name']} ji! "
             f"Main Akriti Patel hoon Anton Automation se. "
             f"Aapne {lead['interest']} ke liye enquiry ki thi — "
-            f"kya aap 2 minute baat kar sakte hain?"
+            f"kya aap abhi baat kar sakte hain?"
         )
+        # Add to context so LLM knows greeting was already said
         messages.append({"role": "assistant", "content": greeting})
+        # Also add a system reminder so LLM never repeats it
+        messages.append({"role": "system", "content": "The greeting above was already spoken. Do NOT repeat it. Ask the first qualification question when the caller responds."})
         await task.queue_frames([TextFrame(text=greeting)])
 
     @transport.event_handler("on_client_disconnected")
