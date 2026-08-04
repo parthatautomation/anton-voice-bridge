@@ -41,22 +41,23 @@ CALL_CONTEXT: dict = {}
 SYSTEM_PROMPT = """You are Akriti, sales agent at Anton Automation (conveyor system manufacturer, India).
 
 LANGUAGE: Start Hindi. Match caller's language instantly. Never mix.
-STYLE: 1 short sentence only. Natural phone call.
+STYLE: 1 short sentence only. Natural phone call. Never repeat the greeting.
 
-GOAL - collect 5 things one by one:
-1. Material to convey
-2. Weight per unit/meter
-3. Length needed (metres)
-4. Location/use
-5. Timeline
-
-If asked about company: "Hum belt, screw aur chain conveyors banate hain — mining, cement, pharma sab industries ke liye."
-If confused: Apologize and re-explain simply in 1 sentence.
+If caller says Hello/Haan ji/Haan/Ha: Immediately ask first qualification question.
+If asked about company: "Hum belt, screw aur chain conveyors banate hain — mining, cement, pharma industries ke liye."
+If confused: Apologize briefly and re-explain.
 If all 5 collected: "Perfect! Free site visit aur quotation arrange karta hoon — aapka location?"
 If not interested: Thank briefly and end.
 If wants engineer: "Abhi connect karti hoon."
 
-Keep every response to maximum 1 sentence. Be warm and direct."""
+GOAL - collect these 5 things one by one:
+1. Material to convey (stone, coal, cement etc.)
+2. Weight per unit/meter
+3. Conveyor length (metres)
+4. Location/application
+5. Timeline
+
+Keep every response to 1 sentence maximum."""
 
 
 def normalize_india(num: str) -> str:
@@ -198,7 +199,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         api_key=SARVAM_API_KEY,
         settings=SarvamLLMService.Settings(
             model="sarvam-105b",
-            max_tokens=80,
+            max_tokens=150,
         ),
     )
 
@@ -229,8 +230,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         logger.info("on_client_connected fired — sending greeting")
         greeting = (
             f"Namaste {lead['name']} ji! "
-            f"Main Akriti Patel hoon Anton Automation se — "
-            f"aapne {lead['interest']} ke liye enquiry ki thi, "
+            f"Main Akriti Patel hoon Anton Automation se. "
+            f"Aapne {lead['interest']} ke liye enquiry ki thi — "
             f"kya aap 2 minute baat kar sakte hain?"
         )
         messages.append({"role": "assistant", "content": greeting})
@@ -247,22 +248,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         await task.cancel()
         await post_to_n8n(lead, transcript, final_status)
 
-    # Send greeting immediately after pipeline starts — don't rely on on_client_connected
-    async def send_greeting():
-        await asyncio.sleep(1.0)  # Small delay for pipeline to initialize
-        logger.info("Sending greeting via queued TextFrame")
-        greeting = (
-            f"Namaste {lead['name']} ji! "
-            f"Main Akriti Patel hoon Anton Automation se — "
-            f"aapne {lead['interest']} ke liye enquiry ki thi, "
-            f"kya aap 2 minute baat kar sakte hain?"
-        )
-        if not any(m.get("content") == greeting for m in messages):
-            messages.append({"role": "assistant", "content": greeting})
-        await task.queue_frames([TextFrame(text=greeting)])
-
     runner = PipelineRunner(handle_sigint=False)
-    asyncio.create_task(send_greeting())
     await runner.run(task)
 
 
