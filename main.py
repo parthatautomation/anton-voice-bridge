@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import TextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -168,10 +167,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
+            audio_in_sample_rate=8000,
             audio_out_enabled=True,
+            audio_out_sample_rate=8000,
             add_wav_header=False,
-            vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
             serializer=serializer,
         ),
     )
@@ -227,7 +226,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
-        logger.info("Caller connected — sending greeting via TTS")
+        logger.info("on_client_connected fired — sending greeting")
         greeting = (
             f"Namaste {lead['name']} ji! "
             f"Main Akriti Patel hoon Anton Automation se — "
@@ -248,7 +247,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         await task.cancel()
         await post_to_n8n(lead, transcript, final_status)
 
+    # Send greeting immediately after pipeline starts — don't rely on on_client_connected
+    async def send_greeting():
+        await asyncio.sleep(1.0)  # Small delay for pipeline to initialize
+        logger.info("Sending greeting via queued TextFrame")
+        greeting = (
+            f"Namaste {lead['name']} ji! "
+            f"Main Akriti Patel hoon Anton Automation se — "
+            f"aapne {lead['interest']} ke liye enquiry ki thi, "
+            f"kya aap 2 minute baat kar sakte hain?"
+        )
+        if not any(m.get("content") == greeting for m in messages):
+            messages.append({"role": "assistant", "content": greeting})
+        await task.queue_frames([TextFrame(text=greeting)])
+
     runner = PipelineRunner(handle_sigint=False)
+    asyncio.create_task(send_greeting())
     await runner.run(task)
 
 
