@@ -1,4 +1,4 @@
-pipecat-ai[websocket,sarvam,silero]==1.6.0
+pipecat-ai[websocket,sarvam,silero,groq]==1.6.0
 fastapi>=0.115.6
 uvicorn[standard]>=0.32.0
 httpx>=0.27.0
