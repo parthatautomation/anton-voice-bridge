@@ -20,7 +20,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.serializers.plivo import PlivoFrameSerializer
-from pipecat.services.sarvam.llm import SarvamLLMService
+from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transports.websocket.fastapi import (
@@ -31,6 +31,7 @@ from pipecat.transports.websocket.fastapi import (
 load_dotenv()
 
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
 N8N_CALLBACK_URL = os.getenv("N8N_CALLBACK_URL", "https://workflow.parthkalyani.in/webhook/anton-call-callback")
 PLIVO_AUTH_ID = os.getenv("PLIVO_AUTH_ID", "MAMTDKN2NIZDKTZJQ2ZI")
@@ -99,14 +100,17 @@ app = FastAPI(title="Anton Automation Voice Bridge")
 
 @app.get("/health")
 async def health():
-    plivo_token_set = len(PLIVO_AUTH_TOKEN) > 10
     return {
         "status": "ok",
         "service": "anton-voice-bridge",
         "pipecat": "enabled",
         "sarvam_key_length": len(SARVAM_API_KEY),
+        "groq_key_set": len(GROQ_API_KEY) > 10,
         "plivo_auth_id": PLIVO_AUTH_ID[:8] + "...",
-        "plivo_token_set": plivo_token_set,
+        "plivo_token_set": len(PLIVO_AUTH_TOKEN) > 10,
+        "llm": "groq/llama-3.3-70b-versatile",
+        "stt": "sarvam/saaras:v3",
+        "tts": "sarvam/bulbul:v3-beta",
     }
 
 
@@ -200,12 +204,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         ),
     )
 
-    llm = SarvamLLMService(
-        api_key=SARVAM_API_KEY,
-        settings=SarvamLLMService.Settings(
-            model="sarvam-105b",
-            max_tokens=150,
-        ),
+    llm = GroqLLMService(
+        api_key=GROQ_API_KEY,
+        model="llama-3.3-70b-versatile",
     )
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
