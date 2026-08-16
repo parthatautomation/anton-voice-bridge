@@ -1,5 +1,6 @@
 """
-Anton Automation — Live Call Bridge (Pipecat Edition)
+PK AI Calling Sales Agent — Live Call Bridge (Pipecat Edition)
+Parth Kalyani & Associates | parthkalyani.in
 Clean architecture: Plivo → WebSocket → Pipecat → Sarvam AI (STT/LLM/TTS)
 """
 
@@ -33,33 +34,58 @@ load_dotenv()
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://web-production-710a9d.up.railway.app")
-N8N_CALLBACK_URL = os.getenv("N8N_CALLBACK_URL", "https://workflow.parthkalyani.in/webhook/anton-call-callback")
+N8N_CALLBACK_URL = os.getenv("N8N_CALLBACK_URL", "https://workflow.parthkalyani.in/webhook/pk-call-callback")
 PLIVO_AUTH_ID = os.getenv("PLIVO_AUTH_ID", "MAMTDKN2NIZDKTZJQ2ZI")
 PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
 WS_BASE_URL = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
 CALL_CONTEXT: dict = {}
 
-SYSTEM_PROMPT = """You are Akriti, sales agent at Anton Automation (conveyor system manufacturer, India).
+SYSTEM_PROMPT = """You are Akriti Patel, AI Sales Executive at Parth Kalyani & Associates, a business automation and ERP consultancy based in Vadodara, Gujarat, India.
+
+ABOUT THE COMPANY:
+Parth Kalyani & Associates helps startups and MSMEs grow through technology automation and digital marketing.
+- 8+ years experience | 578+ clients | 8 countries | 3 branches in India
+- Services: Performance Marketing, AI Automation, Agentic AI, Custom AI, Odoo ERP, ERPNext, SAP
+- Website: parthkalyani.in | Contact: +91 90236 69968
 
 STRICT RULES:
-- NEVER say "Namaste" or repeat the greeting again — it was already said once at the start
-- NEVER introduce yourself again — already done
-- LANGUAGE: Match caller's language instantly. Never mix languages.
-- LENGTH: Maximum 1 sentence per response. Phone call style.
+- NEVER repeat the greeting — it was already said once
+- NEVER introduce yourself again
+- LANGUAGE: Start Hindi. Switch instantly to caller's language (Gujarati/English etc). Never mix.
+- LENGTH: Maximum 2 sentences per response. Natural phone call style.
 
-CONVERSATION FLOW:
-- After greeting confirmed (Haan ji / Hello / OK / Ji): Ask "Aap kaunsa material convey karna chahte hain?"
-- After material: Ask about weight
-- After weight: Ask about conveyor length
-- After length: Ask about location/application  
-- After location: Ask about timeline
-- After all 5: Say "Perfect! Main free site visit aur quotation arrange karta hoon."
+QUALIFICATION FLOW (one question at a time):
+Q1 — Business Type: "Aapka business kis field mein hai — manufacturing, trading, ya service?"
+Q2 — Service Needed: "Aapko kaunsi service helpful lagegi — ERP, AI automation, ya performance marketing?"
+Q3 — User Count: "System kitne log use karenge — 5 se kam, 5-25, ya usse zyada?"
+Q4 — Timeline: "Is mahine lena hai ya thoda aur time lenge?"
 
-If asked about company: "Hum stone crusher, cement, pharma aur mining ke liye custom conveyor systems banate hain."
-If not interested: Thank briefly and end call.
-If wants engineer/human: "Abhi connect karti hoon."
+SCORING:
+Q1 Business Type: 20 pts
+Q2 Service Needed: 30 pts — specific service = full points
+Q3 User Count: 25 pts — 25+ users = full | 5-25 = 20 | below 5 = 10
+Q4 Timeline: 25 pts — this month = 25 | 1-2 months = 15 | exploring = 0
 
-GOAL: Collect material, weight, length, location, timeline — one question at a time."""
+OBJECTION HANDLING:
+- "Mehenga hai" → "Ek baar free consultation mein baat karein — budget ke hisaab se solution nikalte hain."
+- "Software hai" → "Kaunsa use kar rahe hain? Hum integrate bhi kar dete hain."
+- "WhatsApp bhejo" → "Zaroor! Pehle 2 minute requirement samajh leti hoon — aapka business kya hai?"
+- "Busy hoon" → "Kab convenient hoga — subah 10 baje ya dopahar 2 baje?"
+- "Call later" → Confirm specific time and end politely.
+
+IF ASKED ABOUT SERVICES:
+- ERP: "Odoo, ERPNext aur SAP — teen options hain aapke business size ke hisaab se."
+- AI: "Hum AI calling agents, WhatsApp bots aur workflow automation banate hain jo 24/7 kaam karte hain."
+- Marketing: "Google, Meta aur LinkedIn ads — typically 3x to 10x ROI milta hai."
+- Custom AI: "Aapke specific business process ke liye custom AI solution banate hain."
+
+IF ASKED IF AI: "Main Akriti hoon, Parth Kalyani & Associates se. Batao aapki kya zaroorat hai?"
+
+END OF CALL:
+- Score 80+: "Bahut achha! Main Parth sir ke saath aapka free consultation book karti hoon — WhatsApp pe confirmation aayega."
+- Score 50-79: "Dhanyavaad! Main aapko company profile WhatsApp pe bhejti hoon."
+- Not interested: "Koi baat nahi! Agar kabhi zaroorat ho toh parthkalyani.in pe visit karein. Dhanyavaad!"
+- Wants human: "Abhi connect karti hoon." → trigger handover"""
 
 
 def normalize_india(num: str) -> str:
@@ -95,7 +121,7 @@ async def post_to_n8n(lead: dict, transcript: list, status: dict):
         logger.error(f"n8n callback failed: {e}")
 
 
-app = FastAPI(title="Anton Automation Voice Bridge")
+app = FastAPI(title="PK AI Calling Sales Agent")
 
 
 @app.get("/health")
@@ -174,7 +200,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_in_sample_rate=8000,
-            audio_in_passthrough=False,
             audio_out_enabled=True,
             audio_out_sample_rate=8000,
             add_wav_header=False,
@@ -187,11 +212,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         settings=SarvamSTTService.Settings(
             model="saaras:v3",
             language="unknown",
-            vad_signals=True,
-            negative_speech_threshold=0.6,
-            min_speech_frames=5,
         ),
-        mode="transcribe",
     )
 
     tts = SarvamTTSService(
@@ -206,7 +227,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     llm = GroqLLMService(
         api_key=GROQ_API_KEY,
-        model="llama-3.3-70b-versatile",
+        settings=GroqLLMService.Settings(model="llama-3.3-70b-versatile"),
     )
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -236,9 +257,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         logger.info("on_client_connected fired — sending greeting")
         greeting = (
             f"Namaste {lead['name']} ji! "
-            f"Main Akriti Patel hoon Anton Automation se. "
-            f"Aapne {lead['interest']} ke liye enquiry ki thi — "
-            f"kya aap abhi baat kar sakte hain?"
+            f"Main Akriti Patel bol rahi hoon Parth Kalyani & Associates se, Vadodara se. "
+            f"Aapne {lead['interest']} ke baare mein enquiry ki thi — "
+            f"kya aap 2 minute baat kar sakte hain?"
         )
         # Add to context so LLM knows greeting was already said
         messages.append({"role": "assistant", "content": greeting})
