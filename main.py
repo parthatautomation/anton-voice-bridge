@@ -103,7 +103,8 @@ def normalize_india(num: str) -> str:
     return '+' + digits
 
 
-async def post_to_n8n(lead: dict, transcript: list, status: dict):
+async def post_call_results(lead: dict, transcript: list, status: dict):
+    """POST call result to n8n for processing."""
     full_transcript = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in transcript)
     payload = {
         "mobile": lead.get("leadId", ""),
@@ -140,7 +141,7 @@ async def health():
         "groq_key_set": len(GROQ_API_KEY) > 10,
         "plivo_auth_id": PLIVO_AUTH_ID[:8] + "...",
         "plivo_token_set": len(PLIVO_AUTH_TOKEN) > 10,
-        "llm": "groq/gpt-oss-20b",
+        "llm": "groq/openai/gpt-oss-20b",
         "stt": "sarvam/saaras:v3",
         "tts": "sarvam/bulbul:v3-beta",
     }
@@ -233,7 +234,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
     llm = GroqLLMService(
         api_key=GROQ_API_KEY,
-        settings=GroqLLMService.Settings(model="gpt-oss-20b"),
+        settings=GroqLLMService.Settings(model="openai/gpt-oss-20b"),
     )
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -282,7 +283,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                 if isinstance(content_text, str) and content_text.strip():
                     transcript.append({"role": msg["role"], "content": content_text.strip()})
         await task.cancel()
-        await post_to_n8n(lead, transcript, final_status)
+        await post_call_results(lead, transcript, final_status)
 
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
