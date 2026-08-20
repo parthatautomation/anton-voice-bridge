@@ -267,7 +267,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         greeting = (
             f"Namaste {lead['name']} ji! "
             f"Maine dekha aapne {lead['interest']} ke baare mein enquiry ki thi — "
-            f"main Akriti Patel bol rahi hoon Parth Kalyani se, Vadodara se. "
+            f"main Akriti Patel bol rahi hoon Parth Kalyani se, Gujarat se. "
             f"Kya aap 2 minute baat kar sakte hain?"
         )
         # Add to context so LLM knows greeting was already said
