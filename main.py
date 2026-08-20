@@ -56,9 +56,10 @@ STRICT RULES:
 - TONE: Speak naturally, like a real person on a call — not scripted. Do NOT start every single response with a filler word. Use a filler like "Haan ji," "Achha," or "Theek hai," only occasionally, when it genuinely fits (e.g. acknowledging what the caller just said) — never two turns in a row, and never the same filler twice in a row. Most responses should go straight into the sentence with no filler at all.
 - RECOVERY: If the caller's reply suggests they didn't clearly hear the opening — for example they just say "Hello", or ask who is calling, which company, or what enquiry they made — your very next response must first restate in one short sentence who you are and what their enquiry was, before continuing. Example: "Main Akriti, Parth Kalyani se — aapne [unke interest] ke baare mein enquiry ki thi." Do this the FIRST time confusion appears, not only after the caller asks twice.
 - NEVER skip any qualification step — all 4 must be asked in order.
+- NEVER say the same sentence twice in a row. If the caller's reply is unclear or you already just asked something, move forward with something new — do not repeat the same question back to back.
 
 PRODUCT ROUTING — do this first:
-The caller already enquired about a specific product/service (given as {interest} in the greeting). Match it to exactly ONE of these 4 categories: ERP, Agentic AI, IndiaMart AI Sales Agent, Performance Marketing. Only ask that category's 4 qualification questions below — never ask questions from the other 3 categories. If the enquiry is unclear or doesn't match any category, ask: "Aap kis service mein interested hain — ERP, AI automation, IndiaMart AI agent, ya performance marketing?" then use that category's questions.
+For outbound calls, the caller already enquired about a specific product/service (given as {interest} in the greeting) — match it to exactly ONE of these 4 categories: ERP, Agentic AI, IndiaMart AI Sales Agent, Performance Marketing. For inbound calls, listen to what the caller says and match their stated need to one of these 4 categories, asking directly if unclear: "Aap kis service mein interested hain — ERP, AI automation, IndiaMart AI agent, ya performance marketing?" Once matched, ask ONLY that category's 4 qualification questions below — never ask questions from the other 3 categories.
 
 QUALIFICATION QUESTIONS BY CATEGORY (ask all 4, one per turn, never skip, never combine):
 
@@ -75,10 +76,10 @@ Q3: "Roughly daily kitna volume hai — kitne queries ya tasks handle karne hain
 Q4: "Kab tak shuru karna chahenge — is mahine ya thoda aur time lenge?"
 
 IndiaMart AI Sales Agent:
-Q1: "Aap IndiaMart pe kitne platforms ya accounts operate karte hain?"
-Q2: "Abhi IndiaMart leads kaun follow-up karta hai — team member ya khud aap?"
-Q3: "Roughly kitne leads daily milte hain IndiaMart se?"
-Q4: "Kab se start karna chahenge — is mahine ya thoda aur time lenge?"
+Q1: "Aapke kitne platforms se lead aati hai?"
+Q2: "Aapke product keywords kitne hain?"
+Q3: "Aapke client enquiries kitne cities se aati hain?"
+Q4: "Monthly approximate leads kitni hoti hain par platform?"
 
 Performance Marketing:
 Q1: "Konse platform pe ads chalate hain ya chalana chahte hain — Google, Meta, ya dono?"
@@ -285,16 +286,33 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
         logger.info("on_client_connected fired — sending greeting")
-        greeting = (
-            f"Namaste {lead['name']} ji! "
-            f"Maine dekha aapne {lead['interest']} ke baare mein enquiry ki thi — "
-            f"main Akriti Patel bol rahi hoon Parth Kalyani se, Vadodara se. "
-            f"Kya aap 2 minute baat kar sakte hain?"
-        )
+        is_inbound = not lead.get("leadId")
+        if is_inbound:
+            greeting = (
+                "Hi, this is Akriti Patel from Parth Kalyani. "
+                "We are into Performance Marketing, Agentic AI, and SAP solutions — "
+                "how may I assist you?"
+            )
+            reminder = (
+                "This is an INBOUND call — the caller called us, we don't know their need yet. "
+                "The greeting above was already spoken, do NOT repeat it. "
+                "Listen carefully to what the caller says next and identify which category their need "
+                "matches — ERP, Agentic AI, IndiaMart AI Sales Agent, or Performance Marketing — "
+                "then ask that category's 4 qualification questions, one per turn. "
+                "If unclear, ask them directly which service they're interested in."
+            )
+        else:
+            greeting = (
+                f"Namaste {lead['name']} ji! "
+                f"Maine dekha aapne {lead['interest']} ke baare mein enquiry ki thi — "
+                f"main Akriti Patel bol rahi hoon Parth Kalyani se, Vadodara se. "
+                f"Kya aap 2 minute baat kar sakte hain?"
+            )
+            reminder = "The greeting above was already spoken. Do NOT repeat it. Ask the first qualification question when the caller responds."
         # Add to context so LLM knows greeting was already said
         messages.append({"role": "assistant", "content": greeting})
         # Also add a system reminder so LLM never repeats it
-        messages.append({"role": "system", "content": "The greeting above was already spoken. Do NOT repeat it. Ask the first qualification question when the caller responds."})
+        messages.append({"role": "system", "content": reminder})
         await task.queue_frames([TextFrame(text=greeting)])
 
     @transport.event_handler("on_client_disconnected")
